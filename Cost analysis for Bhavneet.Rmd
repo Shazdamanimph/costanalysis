@@ -975,28 +975,26 @@ network_summary <- network_sims_all %>%
     .groups = "drop"
   )
 
-# --- Table output -------------------------------------------
+#Table output 
 print("=== Network Costs (Median + 95% Interval) ===")
 print(network_summary)
 ```
 ```{r}
-# ------------------------------
+
 # Load libraries
-# ------------------------------
+
 library(shiny)
 library(ggplot2)
 library(dplyr)
 library(scales)
 
-# ------------------------------
+
 # Assume network_summary exists in environment
 # network_summary should have columns:
 # year, scenario, median_cost, lower_total, upper_total
-# ------------------------------
 
-# ------------------------------
 # UI
-# ------------------------------
+
 ui <- fluidPage(
   titlePanel("Network-Level Costs Explorer"),
   
@@ -1031,9 +1029,9 @@ ui <- fluidPage(
   )
 )
 
-# ------------------------------
+
 # Server
-# ------------------------------
+
 server <- function(input, output) {
   
   # Reactive: filter scenarios and apply scaling
@@ -1085,9 +1083,8 @@ server <- function(input, output) {
   
 }
 
-# ------------------------------
+
 # Run the app
-# ------------------------------
 shinyApp(ui = ui, server = server)
 ```
 
@@ -1098,9 +1095,9 @@ library(dplyr)
 library(scales)
 library(tidyr)
 
-# ------------------------------
+
 # UI
-# ------------------------------
+
 ui <- fluidPage(
   titlePanel("Network-Level Costs Explorer"),
   
@@ -1136,9 +1133,9 @@ ui <- fluidPage(
   )
 )
 
-# ------------------------------
+
 # Server
-# ------------------------------
+
 server <- function(input, output) {
 
   # Filter and scale network data
@@ -1199,9 +1196,9 @@ server <- function(input, output) {
   })
 }
 
-# ------------------------------
+
 # Run App
-# ------------------------------
+
 shinyApp(ui, server)
 ```
 
@@ -1213,9 +1210,9 @@ library(dplyr)
 library(tidyr)
 library(scales)
 
-# -----------------------------
+
 # UI
-# -----------------------------
+
 ui <- fluidPage(
   titlePanel("Wastewater Network Cost Explorer"),
   
@@ -1266,9 +1263,9 @@ ui <- fluidPage(
   )
 )
 
-# -----------------------------
+
 # Server
-# -----------------------------
+
 server <- function(input, output) {
   
   # Filter per-pathogen scale-up
@@ -1287,9 +1284,9 @@ server <- function(input, output) {
       )
   })
   
-  # -----------------------------
+ 
   # Tab 1: Per-pathogen costs
-  # -----------------------------
+
   output$pathogenPlot <- renderPlot({
     df <- filtered_scale_up()
     req(nrow(df) > 0)
@@ -1352,9 +1349,9 @@ server <- function(input, output) {
       theme(legend.position = "bottom")
   })
   
-  # -----------------------------
+  
   # Tab 3: Stepwise fixed cost sensitivity
-  # -----------------------------
+
   output$sensitivityPlot <- renderPlot({
     df <- filtered_scale_up()
     req(nrow(df) > 0)
@@ -1383,9 +1380,9 @@ server <- function(input, output) {
       theme(legend.position = "bottom")
   })
   
-  # -----------------------------
+ 
   # Tab 4: Total Network Cost
-  # -----------------------------
+
   output$networkPlot <- renderPlot({
     df <- filtered_scale_up()
     req(nrow(df) > 0)
@@ -1410,9 +1407,9 @@ server <- function(input, output) {
   
 }
 
-# -----------------------------
+
 # Run App
-# -----------------------------
+
 shinyApp(ui, server)
 ```
 
