@@ -1,0 +1,1419 @@
+---
+title: "cost analysis script 2"
+author: "Shazneen Damani"
+date: "2025-09-11"
+output: html_document
+runtime: shiny
+---
+```{r}
+# Translating Bhavneet's code for Marginal Cost Analysis in R 
+
+#load all packages
+ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(scales)
+library(purrr)
+library(broom) 
+
+# Helper to clean numbers
+clean_numeric <- function(x) as.numeric(gsub("[\\$, ]", "", x))
+
+# Prepare data (manual column mapping)
+prepare_data <- function(file_path) {
+  df <- read_csv(file_path, show_col_types = FALSE)
+  
+# Use exact CSV headers
+  df <- df %>%
+    mutate(
+      totalfixedcost    = clean_numeric(`Total Fixed Cost`),
+      totalvariablecost = clean_numeric(`Total Variable Cost`),
+      totaloftests      = clean_numeric(`Total # of tests`),
+      totalcost         = totalfixedcost + totalvariablecost
+    )
+  
+  return(df)
+}
+# Run regressions
+run_models <- function(df, pathogen_name) {
+  results <- list()
+  
+  if (nrow(df) < 5) {
+    return(tibble(
+      pathogen = pathogen_name,
+      model    = "Insufficient data",
+      term = NA, estimate = NA, std.error = NA, statistic = NA, p.value = NA,
+      r2 = NA
+    ))
+  }
+  
+# Model 1: Total Cost ~ Tests
+  m1 <- lm(totalcost ~ totaloftests, data = df)
+  results[["m1"]] <- tidy(m1) %>% 
+    mutate(model = "TotalCost ~ Tests", pathogen = pathogen_name, r2 = glance(m1)$r.squared)
+  
+# Model 2: Total Cost ~ Tests (Tests > 0)
+  df_pos <- df %>% filter(totaloftests > 0)
+  if (nrow(df_pos) > 5) {
+    m2 <- lm(totalcost ~ totaloftests, data = df_pos)
+    results[["m2"]] <- tidy(m2) %>% 
+      mutate(model = "TotalCost ~ Tests (Tests>0)", pathogen = pathogen_name, r2 = glance(m2)$r.squared)
+  }
+  
+# Model 3: Variable Cost ~ Tests
+  m3 <- lm(totalvariablecost ~ totaloftests, data = df)
+  results[["m3"]] <- tidy(m3) %>% 
+    mutate(model = "VariableCost ~ Tests", pathogen = pathogen_name, r2 = glance(m3)$r.squared)
+  
+# Model 4: Avg Cost ~ Tests + Tests^2
+  df_quad <- df %>%
+    mutate(avg_cost = totalcost / totaloftests,
+           totaloftests_sq = totaloftests^2) %>%
+    filter(totaloftests > 0, !is.na(avg_cost))
+  
+  if (nrow(df_quad) > 5) {
+    m4 <- lm(avg_cost ~ totaloftests + totaloftests_sq, data = df_quad)
+    coefs <- coef(m4)
+    optimal_tests <- if (!is.na(coefs["totaloftests_sq"])) {
+      -coefs["totaloftests"] / (2 * coefs["totaloftests_sq"])
+    } else { NA }
+    
+    results[["m4"]] <- tidy(m4) %>% 
+      mutate(model = "AvgCost ~ Tests + Tests^2", pathogen = pathogen_name, r2 = glance(m4)$r.squared)
+    
+    results[["opt"]] <- tibble(
+      pathogen = pathogen_name,
+      model = "Optimal Tests",
+      term = "optimal_tests",
+      estimate = optimal_tests,
+      std.error = NA,
+      statistic = NA,
+      p.value = NA,
+      r2 = NA
+    )
+  }
+  
+  bind_rows(results)
+}
+# File paths
+files <- list(
+  "SARS-CoV-2 Sequencing Yearly"    = "~/Desktop/cost analysis data sheets/SARS-CoV-2 Sequencing Yearly.csv",
+  "SARS-CoV-2 Sequencing Monthly"   = "~/Desktop/cost analysis data sheets/SARS-CoV-2 Sequencing Monthly.csv",
+  "SARS-CoV-2 Conc Monthly"         = "~/Desktop/cost analysis data sheets/SARS-CoV-2 Conc Monthly.csv",
+  "SARS-CoV-2 Concentration Yearly" = "~/Desktop/cost analysis data sheets/SARS-CoV-2 Concentration Yearly.csv",
+  "RSV Yearly"                      = "~/Desktop/cost analysis data sheets/RSV Yearly.csv",
+  "Polio Monthly"                   = "~/Desktop/cost analysis data sheets/Polio Monthly.csv",
+  "Polio Yearly"                   = "~/Desktop/cost analysis data sheets/Polio Yearly.csv",
+  "Flu Monthly"                     = "~/Desktop/cost analysis data sheets/Flu Monthly.csv",
+  "Flu Yearly"                     = "~/Desktop/cost analysis data sheets/Flu yearly.csv",
+  "Hepatitis Monthly"               = "~/Desktop/cost analysis data sheets/Hepatitis Monthly.csv",
+  "Hepatitis yearly"               = "~/Desktop/cost analysis data sheets/Hepatitis yearly.csv",
+  "Norovirus Monthly"               = "~/Desktop/cost analysis data sheets/Norovirus Monthly.csv",
+  "Measles Monthly"                 = "~/Desktop/cost analysis data sheets/Measles Monthly.csv",
+  "Measles yearly"                 = "~/Desktop/cost analysis data sheets/Measles yearly.csv"
+  # "Candida Auris Monthly"           = "~/Desktop/cost analysis data sheets/Cauris Monthly.csv" # add once we get data 
+)
+# Run for all pathogens
+all_results <- map2_dfr(files, names(files), function(path, name) {
+  if (file.exists(path)) {
+    df <- prepare_data(path)
+    run_models(df, name)
+  } else {
+    tibble(
+      pathogen = name,
+      model = "File not found",
+      term = NA, estimate = NA, std.error = NA, statistic = NA, p.value = NA,
+      r2 = NA
+    )
+  }
+})
+# Explore results
+# View full table
+print(all_results)
+
+# Just the optimal test counts
+all_results %>%
+  filter(term == "optimal_tests") %>%
+  select(pathogen, estimate)
+```
+
+```{r}
+#What's the cost per sample
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(scales)
+library(purrr)
+library(broom)
+library(knitr)
+# Helper to clean numeric columns
+clean_numeric <- function(x) as.numeric(gsub("[\\$, ]", "", x))
+
+prepare_data <- function(file_path) {
+  df <- read_csv(file_path, show_col_types = FALSE)
+  df <- df %>%
+    mutate(
+      totalfixedcost    = clean_numeric(`Total Fixed Cost`),
+      totalvariablecost = clean_numeric(`Total Variable Cost`),
+      totaloftests      = clean_numeric(`Total # of tests`),
+      totalcost         = totalfixedcost + totalvariablecost
+    )
+  return(df)
+}
+
+run_models <- function(df, pathogen_name) {
+  results <- list()
+  df_quad <- df %>%
+    mutate(avg_cost = totalcost / totaloftests,
+           totaloftests_sq = totaloftests^2) %>%
+    filter(totaloftests > 0, !is.na(avg_cost))
+
+  if (nrow(df_quad) > 5) {
+    m4 <- lm(avg_cost ~ totaloftests + totaloftests_sq, data = df_quad)
+    coefs <- coef(m4)
+    optimal_tests <- if (!is.na(coefs["totaloftests_sq"])) {
+      -coefs["totaloftests"] / (2 * coefs["totaloftests_sq"])
+    } else { NA }
+
+    results[["opt"]] <- tibble(
+      pathogen = pathogen_name,
+      model = "Optimal Tests",
+      term = "optimal_tests",
+      estimate = optimal_tests
+    )
+  }
+
+  bind_rows(results)
+}
+optimal_tests_df <- all_results %>%
+  filter(term == "optimal_tests") %>%
+  mutate(
+    pathogen_clean = gsub(" Yearly| Monthly| yearly| monthly", "", pathogen),
+    optimal_monthly_tests = round(estimate, 0),
+    annualized_tests = optimal_monthly_tests * 12
+  ) %>%
+  select(pathogen_clean, optimal_monthly_tests, annualized_tests)
+
+all_results <- map2_dfr(files, names(files), function(path, name) {
+  if (file.exists(path)) {
+    df <- prepare_data(path)
+    run_models(df, name)
+  } else {
+    tibble(pathogen = name, model = "File not found", term = NA, estimate = NA)
+  }
+})
+# Yearly CSV files
+yearly_files <- list(
+  "SARS-CoV-2 Sequencing"    = "~/Desktop/cost analysis data sheets/SARS-CoV-2 Sequencing Yearly.csv",
+  "SARS-CoV-2 Concentration" = "~/Desktop/cost analysis data sheets/SARS-CoV-2 Concentration Yearly.csv",
+  "RSV"                      = "~/Desktop/cost analysis data sheets/RSV Yearly.csv",
+  "Polio"                    = "~/Desktop/cost analysis data sheets/Polio Yearly.csv",
+  "Flu"                      = "~/Desktop/cost analysis data sheets/Flu yearly.csv",
+  "Hepatitis"                = "~/Desktop/cost analysis data sheets/Hepatitis yearly.csv",
+  "Measles"                  = "~/Desktop/cost analysis data sheets/Measles yearly.csv"
+)
+costs_list <- lapply(names(yearly_files), function(name) {
+  path <- yearly_files[[name]]
+  if (file.exists(path)) {
+    read_csv(path, show_col_types = FALSE) %>%
+      filter(Year %in% c(2022, 2023, 2024)) %>%
+      mutate(
+        pathogen_clean = name,
+        total_fixed = clean_numeric(`Total Fixed Cost`),
+        total_variable = clean_numeric(`Total Variable Cost`),
+        total_cost = total_fixed + total_variable
+      )
+  } else {
+    tibble(pathogen_clean = name, Year = c(2022, 2023, 2024), total_cost = NA)
+  }
+})
+costs_df <- bind_rows(costs_list)
+final_df <- costs_df %>%
+  left_join(optimal_tests_df, by = "pathogen_clean") %>%
+  filter(!is.na(total_cost) & !is.na(annualized_tests)) %>%
+  mutate(
+    cost_per_test = round(total_cost / annualized_tests, 2)
+  )
+# Extract optimal monthly tests
+optimal_tests_df <- all_results %>%
+  filter(term == "optimal_tests") %>%
+  mutate(
+    pathogen_clean = gsub(" Yearly| Monthly| yearly| monthly", "", pathogen),
+    optimal_monthly_tests = round(estimate, 0),
+    annualized_tests = optimal_monthly_tests * 12
+  ) %>%
+  select(pathogen_clean, optimal_monthly_tests, annualized_tests)
+
+costs_long <- final_df %>%
+  mutate(
+    total_cost = total_fixed + total_variable,
+    pathogen_label = str_wrap(paste(pathogen_clean, Year), width = 15)
+  ) %>%
+  select(pathogen_clean, Year, total_fixed, total_variable, total_cost, cost_per_test, pathogen_label) %>%
+  pivot_longer(cols = c(total_fixed, total_variable),
+               names_to = "cost_type",
+               values_to = "cost") %>%
+  mutate(
+    cost_type = recode(cost_type,
+                       total_fixed = "Fixed Cost",
+                       total_variable = "Variable Cost")
+  )
+
+yearly_files <- list(
+  "SARS-CoV-2 Sequencing"    = "~/Desktop/cost analysis data sheets/SARS-CoV-2 Sequencing Yearly.csv",
+  "SARS-CoV-2 Concentration" = "~/Desktop/cost analysis data sheets/SARS-CoV-2 Concentration Yearly.csv",
+  "RSV"                      = "~/Desktop/cost analysis data sheets/RSV Yearly.csv",
+  "Polio"                    = "~/Desktop/cost analysis data sheets/Polio Yearly.csv",
+  "Flu"                      = "~/Desktop/cost analysis data sheets/Flu yearly.csv",
+  "Hepatitis"                = "~/Desktop/cost analysis data sheets/Hepatitis yearly.csv",
+  "Measles"                  = "~/Desktop/cost analysis data sheets/Measles yearly.csv"
+)
+
+# Read yearly data and compute cost per test using optimal tests
+costs_list <- lapply(names(yearly_files), function(name) {
+  path <- yearly_files[[name]]
+  if (file.exists(path)) {
+    df <- read_csv(path, show_col_types = FALSE) %>%
+      filter(Year %in% c(2022, 2023, 2024)) %>%
+      mutate(
+        pathogen_clean = name,
+        total_fixed = clean_numeric(`Total Fixed Cost`),
+        total_variable = clean_numeric(`Total Variable Cost`),
+        total_cost = total_fixed + total_variable
+      )
+    
+    df
+  } else {
+    tibble(
+      pathogen_clean = name,
+      Year = c(2022, 2023, 2024),
+      total_cost = NA
+    )
+  }
+})
+
+# Combine cost data
+costs_df <- bind_rows(costs_list)
+
+# Merge with optimal tests and compute cost per test
+final_df <- costs_df %>%
+  left_join(optimal_tests_df, by = "pathogen_clean") %>%
+  filter(!is.na(total_cost) & !is.na(annualized_tests)) %>%
+  mutate(
+    cost_per_test = round(total_cost / annualized_tests, 2)
+  )
+# Format and display table
+summary_table <- final_df %>%
+  select(
+    Pathogen = pathogen_clean,
+    Year,
+    `Optimal Monthly Tests` = optimal_monthly_tests,
+    `Annualized Tests` = annualized_tests,
+    `Total Yearly Cost (USD)` = total_cost,
+    `Cost per Test (USD)` = cost_per_test
+  ) %>%
+  mutate(
+    `Total Yearly Cost (USD)` = dollar(`Total Yearly Cost (USD)`),
+    `Cost per Test (USD)` = dollar(`Cost per Test (USD)`)
+  )
+
+kable(summary_table, caption = "Cost per Test by Pathogen and Year (Using Optimal Monthly Tests)")
+
+ggplot(final_df, aes(x = pathogen_clean, y = cost_per_test, fill = factor(Year))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Cost per Test by Pathogen and Year (Using Optimal Monthly Tests)",
+    x = "Pathogen",
+    y = "Cost per Test (USD)",
+    fill = "Year"
+  ) +
+  scale_y_continuous(labels = dollar_format()) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+#What's the cost per sample  
+costs_long <- final_df %>%
+  mutate(
+    total_cost = total_fixed + total_variable,
+    pathogen_label = str_wrap(paste(pathogen_clean, Year), width = 15)
+  ) %>%
+  select(pathogen_clean, Year, total_fixed, total_variable, total_cost, cost_per_test, pathogen_label) %>%
+  pivot_longer(cols = c(total_fixed, total_variable),
+               names_to = "cost_type",
+               values_to = "cost") %>%
+  mutate(
+    cost_type = recode(cost_type,
+                       total_fixed = "Fixed Cost",
+                       total_variable = "Variable Cost")
+  )
+ggplot(costs_long %>% filter(!is.na(cost)), 
+       aes(x = reorder(pathogen_label, total_cost), y = cost, fill = cost_type)) +
+  geom_col(color = "black", width = 0.7) +  # narrower bars
+  geom_text(aes(label = dollar(round(cost, 0))),
+            position = position_stack(vjust = 0.5),  # center labels inside segments
+            size = 3.2, fontface = "bold", color = "white") +  # white text for contrast
+  geom_text(data = costs_long %>% 
+              group_by(pathogen_label) %>% 
+              summarise(cost_per_test = first(cost_per_test),
+                        total_cost = first(total_cost)),
+            aes(x = pathogen_label, y = total_cost * 1.05, 
+                label = paste("Cost/Test:", dollar(cost_per_test))),
+            inherit.aes = FALSE,
+            size = 3.2, fontface = "italic", color = "gray30") +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_continuous(labels = dollar_format(prefix = "$"),
+                     expand = expansion(mult = c(0, 0.3))) +  # more space above bars
+  labs(
+    title = "Total Costs per Pathogen by Year",
+    subtitle = "Fixed vs Variable Cost Breakdown (Using Optimal Monthly Tests)",
+    x = "Pathogen and Year",
+    y = "Cost (USD)",
+    fill = "Cost Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray40"),
+    axis.text.x = element_text(face = "bold"),
+    axis.text.y = element_text(face = "bold", color = "gray30"),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(10, 10, 10, 10),
+    legend.position = "bottom"
+  ) +
+  guides(fill = guide_legend(title.position = "top", title.hjust = 0.5))
+```
+
+```{r}
+# what's our economy of scale to add new targets? 
+library(readr)
+library(dplyr)
+library(broom)
+library(purrr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+
+# Helper to clean numbers
+clean_numeric <- function(x) as.numeric(gsub("[\\$, ]", "", x))
+# Prepare data (manual mapping)
+prepare_data <- function(file_path) {
+  df <- read_csv(file_path, show_col_types = FALSE)
+  
+  df <- df %>%
+    mutate(
+      totalfixedcost    = clean_numeric(`Total Fixed Cost`),
+      totalvariablecost = clean_numeric(`Total Variable Cost`),
+      totaloftests      = clean_numeric(`Total # of tests`),
+      totalcost         = totalfixedcost + totalvariablecost
+    )
+  return(df)
+}
+
+# Run regressions
+run_models <- function(df, pathogen_name) {
+  results <- list()
+  
+  if (nrow(df) < 5) {
+    return(tibble(pathogen = pathogen_name, model = "Insufficient data",
+                  term = NA, estimate = NA, std.error = NA, statistic = NA, p.value = NA, r2 = NA))
+  }
+  
+  # Model: Total Cost ~ Tests
+  m1 <- lm(totalcost ~ totaloftests, data = df)
+  results[["m1"]] <- tidy(m1) %>%
+    mutate(model = "TotalCost ~ Tests", pathogen = pathogen_name, r2 = glance(m1)$r.squared)
+  
+  # Quadratic for optimal tests
+  df_quad <- df %>%
+    mutate(avg_cost = totalcost / totaloftests,
+           totaloftests_sq = totaloftests^2) %>%
+    filter(totaloftests > 0, !is.na(avg_cost))
+  
+  if (nrow(df_quad) > 5) {
+    m4 <- lm(avg_cost ~ totaloftests + totaloftests_sq, data = df_quad)
+    coefs <- coef(m4)
+    optimal_tests <- if (!is.na(coefs["totaloftests_sq"])) {
+      -coefs["totaloftests"] / (2 * coefs["totaloftests_sq"])
+    } else { NA }
+    
+    results[["opt"]] <- tibble(
+      pathogen = pathogen_name, model = "Optimal Tests",
+      term = "optimal_tests", estimate = optimal_tests,
+      std.error = NA, statistic = NA, p.value = NA, r2 = NA
+    )
+  }
+  
+  bind_rows(results)
+}
+# File paths
+files <- list(
+  "SARS-CoV-2 Sequencing Yearly"    = "~/Desktop/cost analysis data sheets/SARS-CoV-2 Sequencing Yearly.csv",
+  "SARS-CoV-2 Sequencing Monthly"   = "~/Desktop/cost analysis data sheets/SARS-CoV-2 Sequencing Monthly.csv",
+  "SARS-CoV-2 Conc Monthly"         = "~/Desktop/cost analysis data sheets/SARS-CoV-2 Conc Monthly.csv",
+  "SARS-CoV-2 Concentration Yearly" = "~/Desktop/cost analysis data sheets/SARS-CoV-2 Concentration Yearly.csv",
+  "RSV Yearly"                      = "~/Desktop/cost analysis data sheets/RSV Yearly.csv",
+  "Polio Monthly"                   = "~/Desktop/cost analysis data sheets/Polio Monthly.csv",
+  "Polio Yearly"                    = "~/Desktop/cost analysis data sheets/Polio Yearly.csv",
+  "Flu Monthly"                     = "~/Desktop/cost analysis data sheets/Flu Monthly.csv",
+  "Flu Yearly"                      = "~/Desktop/cost analysis data sheets/Flu Yearly.csv",
+  "Hepatitis Monthly"               = "~/Desktop/cost analysis data sheets/Hepatitis Monthly.csv",
+  "Hepatitis Yearly"                = "~/Desktop/cost analysis data sheets/Hepatitis Yearly.csv",
+  "Norovirus Monthly"               = "~/Desktop/cost analysis data sheets/Norovirus Monthly.csv",
+  "Measles Monthly"                 = "~/Desktop/cost analysis data sheets/Measles Monthly.csv",
+  "Measles Yearly"                  = "~/Desktop/cost analysis data sheets/Measles Yearly.csv"
+)
+# Run for all pathogens
+all_results <- map2_dfr(files, names(files), function(path, name) {
+  if (file.exists(path)) {
+    df <- prepare_data(path)
+    run_models(df, name)
+  } else {
+    tibble(pathogen = name, model = "File not found",
+           term = NA, estimate = NA, std.error = NA, statistic = NA, p.value = NA, r2 = NA)
+  }
+})
+# Table 1: Pathogen Summary
+coef_table <- all_results %>%
+  filter(model == "TotalCost ~ Tests", term %in% c("(Intercept)", "totaloftests")) %>%
+  select(pathogen, term, estimate) %>%
+  pivot_wider(names_from = term, values_from = estimate) %>%
+  rename(total_fixed_cost = `(Intercept)`, slope = totaloftests)
+
+opt_table <- all_results %>%
+  filter(term == "optimal_tests") %>%
+  select(pathogen, optimal_tests = estimate)
+
+pathogen_summary <- coef_table %>%
+  left_join(opt_table, by = "pathogen") %>%
+  mutate(total_variable_cost = slope) %>%
+  select(pathogen, optimal_tests, total_fixed_cost, total_variable_cost)
+
+cat("\n=== Table 1: Pathogen Summary ===\n")
+print(pathogen_summary)
+
+# Table 2: Scale-up per pathogen
+plants <- c(10, 15, 20, 40, 80, 150, 200)
+freq <- 1:3
+weeks <- 52
+scenarios <- expand.grid(plants = plants, freq = freq)
+
+scale_up_results <- coef_table %>%
+  crossing(scenarios) %>%
+  mutate(
+    tests_per_year = plants * freq * weeks,
+    total_variable_cost = slope * tests_per_year,
+    total_cost = total_fixed_cost + total_variable_cost
+  ) %>%
+  select(pathogen, tests_per_year, plants, freq, total_fixed_cost, total_variable_cost, total_cost)
+
+cat("\n=== Table 2: Pathogen-by-Pathogen Scale-up ===\n")
+print(head(scale_up_results, 20))
+
+# Table 3: Aggregated scale-up
+agg_results <- scale_up_results %>%
+  group_by(plants, freq, tests_per_year) %>%
+  summarise(
+    cost_1_pathogen  = mean(total_cost, na.rm = TRUE),
+    cost_4_pathogens = sum(head(sort(total_cost), 4)),
+    cost_8_pathogens = sum(total_cost),
+    .groups = "drop"
+  )
+
+cat("\n=== Table 3: Aggregated Scale-up (1, 4, 8 Pathogens) ===\n")
+print(head(agg_results, 20))
+
+# Polished Plots
+# Plot A: Pathogen-specific scaling
+ggplot(scale_up_results, aes(x = plants, y = total_cost/1e6,
+                             color = pathogen, group = pathogen)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  facet_wrap(~freq, ncol = 1) +
+  scale_y_continuous(labels = dollar_format(suffix = "M")) +
+  labs(
+    title = "Annual Cost by Pathogen",
+    subtitle = "Scaling by Number of Plants and Testing Frequency",
+    x = "Wastewater Treatment Plants",
+    y = "Annual Cost (Million USD)",
+    color = "Pathogen"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom")
+
+
+# Plot B: Aggregated scale-up (1 vs 4 vs 8 pathogens)
+scale_up_long <- agg_results %>%
+  pivot_longer(cols = starts_with("cost"), names_to = "scenario", values_to = "annual_cost") %>%
+  mutate(scenario = recode(scenario,
+                           cost_1_pathogen = "1 Pathogen",
+                           cost_4_pathogens = "4 Pathogens",
+                           cost_8_pathogens = "8 Pathogens"))
+
+ggplot(scale_up_long, aes(x = plants, y = annual_cost/1e6,
+                          color = scenario, group = scenario)) +
+  geom_line(size = 1.4) +
+  geom_point(size = 3) +
+  facet_wrap(~freq, ncol = 1) +
+  scale_y_continuous(labels = dollar_format(suffix = "M")) +
+  labs(
+    title = "Scale-up Cost Scenarios",
+    subtitle = "Comparing 1, 4, and 8 Pathogens",
+    x = "Wastewater Treatment Plants",
+    y = "Annual Cost (Million USD)",
+    color = "Scenario"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray40")
+  )
+```
+
+```{r}
+# Stepwise Fixed Costs for scale up 
+
+# Helper to clean numbers
+clean_numeric <- function(x) as.numeric(gsub("[\\$, ]", "", x))
+
+# Prepare data
+prepare_data <- function(file_path) {
+  df <- read_csv(file_path, show_col_types = FALSE)
+  
+  df <- df %>%
+    mutate(
+      totalfixedcost    = clean_numeric(`Total Fixed Cost`),
+      totalvariablecost = clean_numeric(`Total Variable Cost`),
+      totaloftests      = clean_numeric(`Total # of tests`),
+      totalcost         = totalfixedcost + totalvariablecost
+    )
+  return(df)
+}
+# Run regressions
+run_models <- function(df, pathogen_name) {
+  results <- list()
+  
+  if (nrow(df) < 5) {
+    return(tibble(pathogen = pathogen_name, model = "Insufficient data",
+                  term = NA, estimate = NA, std.error = NA, statistic = NA, p.value = NA, r2 = NA))
+  }
+  
+  # Model: Total Cost ~ Tests
+  m1 <- lm(totalcost ~ totaloftests, data = df)
+  results[["m1"]] <- tidy(m1) %>%
+    mutate(model = "TotalCost ~ Tests", pathogen = pathogen_name, r2 = glance(m1)$r.squared)
+  
+  # Quadratic for optimal tests
+  df_quad <- df %>%
+    mutate(avg_cost = totalcost / totaloftests,
+           totaloftests_sq = totaloftests^2) %>%
+    filter(totaloftests > 0, !is.na(avg_cost))
+  
+  if (nrow(df_quad) > 5) {
+    m4 <- lm(avg_cost ~ totaloftests + totaloftests_sq, data = df_quad)
+    coefs <- coef(m4)
+    optimal_tests <- if (!is.na(coefs["totaloftests_sq"])) {
+      -coefs["totaloftests"] / (2 * coefs["totaloftests_sq"])
+    } else { NA }
+    
+    results[["opt"]] <- tibble(
+      pathogen = pathogen_name, model = "Optimal Tests",
+      term = "optimal_tests", estimate = optimal_tests,
+      std.error = NA, statistic = NA, p.value = NA, r2 = NA
+    )
+  }
+  
+  bind_rows(results)
+}
+# File paths 
+files <- list(
+  "SARS-CoV-2 Sequencing Monthly"   = "~/Desktop/cost analysis data sheets/SARS-CoV-2 Sequencing Monthly.csv",
+  "SARS-CoV-2 Conc Monthly"         = "~/Desktop/cost analysis data sheets/SARS-CoV-2 Conc Monthly.csv",
+  "Polio Monthly"                   = "~/Desktop/cost analysis data sheets/Polio Monthly.csv",
+  "Flu Monthly"                     = "~/Desktop/cost analysis data sheets/Flu Monthly.csv",
+  "Hepatitis Monthly"               = "~/Desktop/cost analysis data sheets/Hepatitis Monthly.csv",
+  "Norovirus Monthly"               = "~/Desktop/cost analysis data sheets/Norovirus Monthly.csv",
+  "Measles Monthly"                 = "~/Desktop/cost analysis data sheets/Measles Monthly.csv",
+  "RSV Yearly"                      = "~/Desktop/cost analysis data sheets/RSV Yearly.csv"
+)
+# Run for all pathogens
+all_results <- map2_dfr(files, names(files), function(path, name) {
+  if (file.exists(path)) {
+    df <- prepare_data(path)
+    run_models(df, name)
+  } else {
+    tibble(pathogen = name, model = "File not found",
+           term = NA, estimate = NA, std.error = NA, statistic = NA, p.value = NA, r2 = NA)
+  }
+})
+# Table 1: Pathogen Summary
+coef_table <- all_results %>%
+  filter(model == "TotalCost ~ Tests", term %in% c("(Intercept)", "totaloftests")) %>%
+  select(pathogen, term, estimate) %>%
+  pivot_wider(names_from = term, values_from = estimate) %>%
+  rename(base_fixed_cost = `(Intercept)`, slope = totaloftests)
+
+opt_table <- all_results %>%
+  filter(term == "optimal_tests") %>%
+  select(pathogen, optimal_tests = estimate)
+
+pathogen_summary <- coef_table %>%
+  left_join(opt_table, by = "pathogen") %>%
+  mutate(total_variable_cost = slope) %>%
+  select(pathogen, optimal_tests, base_fixed_cost, total_variable_cost)
+
+cat("\n=== Table 1: Pathogen Summary ===\n")
+print(pathogen_summary)
+
+# Table 2: Per-pathogen Scale-up (with stepwise fixed costs)
+plants <- c(10, 15, 20, 40, 80, 150, 200)
+freq <- 1:3
+weeks <- 52
+scenarios <- expand.grid(plants = plants, freq = freq)
+
+scale_up_results <- coef_table %>%
+  left_join(opt_table, by = "pathogen") %>%
+  crossing(scenarios) %>%
+  mutate(
+    tests_per_year = plants * freq * weeks,
+    tests_per_month = tests_per_year / 12,
+    fixed_multiplier = ifelse(!is.na(optimal_tests),
+                              ceiling(tests_per_month / optimal_tests), 1),
+    adj_fixed_cost = base_fixed_cost * fixed_multiplier,
+    total_variable_cost = slope * tests_per_year,
+    total_cost = adj_fixed_cost + total_variable_cost
+  ) %>%
+  select(pathogen, plants, freq, tests_per_year, tests_per_month,
+         optimal_tests, adj_fixed_cost, total_variable_cost, total_cost)
+
+cat("\n=== Table 2: Per-pathogen Scale-up ===\n")
+print(head(scale_up_results, 20))
+
+# Table 3: Aggregated Scale-up (1, 4, 8 pathogens)
+agg_results <- scale_up_results %>%
+  group_by(plants, freq, tests_per_year, tests_per_month) %>%
+  summarise(
+    cost_1_pathogen  = mean(total_cost, na.rm = TRUE),
+    cost_4_pathogens = sum(head(sort(total_cost), 4)),
+    cost_8_pathogens = sum(total_cost),
+    .groups = "drop"
+  )
+
+cat("\n=== Table 3: Aggregated Scale-up (1, 4, 8 Pathogens) ===\n")
+print(head(agg_results, 20))
+
+# Plots
+# Plot A: Pathogen-specific scaling
+ggplot(scale_up_results, aes(x = plants, y = total_cost/1e6,
+                             color = pathogen, group = pathogen)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  facet_wrap(~freq, ncol = 1) +
+  scale_y_continuous(labels = dollar_format(suffix = "M")) +
+  labs(
+    title = "Annual Cost by Pathogen",
+    subtitle = "Stepwise Fixed Costs Applied by Optimal Test Thresholds",
+    x = "Wastewater Treatment Plants",
+    y = "Annual Cost (Million USD)",
+    color = "Pathogen"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom")
+
+# Plot B: Aggregated scale-up
+scale_up_long <- agg_results %>%
+  pivot_longer(cols = starts_with("cost"),
+               names_to = "scenario", values_to = "annual_cost") %>%
+  mutate(scenario = recode(scenario,
+                           cost_1_pathogen = "1 Pathogen",
+                           cost_4_pathogens = "4 Pathogens",
+                           cost_8_pathogens = "8 Pathogens"))
+
+ggplot(scale_up_long, aes(x = plants, y = annual_cost/1e6,
+                          color = scenario, group = scenario)) +
+  geom_line(size = 1.4) +
+  geom_point(size = 3) +
+  facet_wrap(~freq, ncol = 1) +
+  scale_y_continuous(labels = dollar_format(suffix = "M")) +
+  labs(
+    title = "Aggregated Scale-up Scenarios",
+    subtitle = "Stepwise Fixed Costs with 1 vs 4 vs 8 Pathogens",
+    x = "Wastewater Treatment Plants",
+    y = "Annual Cost (Million USD)",
+    color = "Scenario"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray40")
+  )
+
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(scales)
+
+# Prepare data
+scale_up_long <- scale_up_results %>%
+  pivot_longer(
+    cols = c(adj_fixed_cost, total_variable_cost),
+    names_to = "cost_type",
+    values_to = "cost"
+  ) %>%
+  mutate(cost_type = recode(cost_type,
+                            adj_fixed_cost = "Fixed Cost",
+                            total_variable_cost = "Variable Cost"))
+
+# ----- Simpler Stacked Bar Plot: One Pathogen at a time ----
+ggplot(scale_up_long %>% filter(freq == 1),  # pick one frequency to simplify
+       aes(x = plants, y = cost/1e6, fill = cost_type)) +
+  geom_bar(stat = "identity") +
+  geom_vline(aes(xintercept = optimal_tests), color = "red", linetype = "dashed", size = 0.8) +
+  facet_wrap(~pathogen, ncol = 2, scales = "free_y") +  # only facet by pathogen
+  scale_y_continuous(labels = dollar_format(suffix = "M")) +
+  scale_fill_manual(values = c("Fixed Cost" = "#1b9e77", "Variable Cost" = "#d95f02")) +
+  labs(
+    title = "Annual Wastewater Surveillance Costs by Pathogen",
+    subtitle = "Stacked Fixed vs Variable Costs (Red dashed = optimal monthly test threshold)",
+    x = "Number of Wastewater Treatment Plants",
+    y = "Annual Cost (Million USD)",
+    fill = "Cost Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray40"),
+    strip.text = element_text(face = "bold")
+  )
+
+# ----- Optional: Simple Area Plot ----
+ggplot(scale_up_long %>% filter(freq == 1), 
+       aes(x = plants, y = cost/1e6, fill = cost_type)) +
+  geom_area(alpha = 0.8, position = "stack") +
+  geom_vline(aes(xintercept = optimal_tests), color = "red", linetype = "dashed", size = 0.8) +
+  facet_wrap(~pathogen, ncol = 2, scales = "free_y") +
+  scale_y_continuous(labels = dollar_format(suffix = "M")) +
+  scale_fill_manual(values = c("Fixed Cost" = "#1b9e77", "Variable Cost" = "#d95f02")) +
+  labs(
+    title = "Cost Composition by Pathogen",
+    subtitle = "Stacked Fixed vs Variable Costs (Red dashed = optimal tests)",
+    x = "Number of Wastewater Treatment Plants",
+    y = "Annual Cost (Million USD)",
+    fill = "Cost Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray40"),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+```{r}
+#monto carlo and step Pathogen specific scale up or down cost
+#Cost of doing only 1 pathogen vs 2/3/4/5 
+#rightsizing 
+
+# 1. Define inflation projections (2020–2030) 
+inflation_proj <- data.frame(
+  year = 2020:2030,
+  inflation_rate = c(0.014, 0.018, 0.02, 0.022, 0.025, 0.023, 0.021, 0.02, 0.019, 0.02, 0.02)
+)
+
+# 2. Prepare scale-up data 
+# Extract coefficient table and optimal tests from your all_results
+coef_table <- all_results %>%
+  filter(model == "TotalCost ~ Tests", term %in% c("(Intercept)", "totaloftests")) %>%
+  select(pathogen, term, estimate) %>%
+  pivot_wider(names_from = term, values_from = estimate) %>%
+  rename(base_fixed_cost = `(Intercept)`, slope = totaloftests)
+
+opt_table <- all_results %>%
+  filter(term == "optimal_tests") %>%
+  select(pathogen, optimal_tests = estimate)
+
+pathogen_summary <- coef_table %>%
+  left_join(opt_table, by = "pathogen") %>%
+  mutate(total_variable_cost = slope) %>%
+  select(pathogen, optimal_tests, base_fixed_cost, total_variable_cost)
+
+# 3. Generate scale-up scenarios (example: plants and frequency) ----
+plants <- c(10, 15, 30)
+freq <- 1:3
+weeks <- 52
+scenarios <- expand.grid(plants = plants, freq = freq)
+
+scale_up_results <- pathogen_summary %>%
+  crossing(scenarios) %>%
+  mutate(
+    tests_per_year = plants * freq * weeks,
+    tests_per_month = tests_per_year / 12,
+    fixed_multiplier = ifelse(!is.na(optimal_tests),
+                              ceiling(tests_per_month / optimal_tests), 1),
+    adj_fixed_cost = base_fixed_cost * fixed_multiplier,
+    total_variable_cost = total_variable_cost * tests_per_year,
+    total_cost = adj_fixed_cost + total_variable_cost
+  )
+
+# 4. Apply inflation (2020–2030) 
+scale_up_inflation <- scale_up_results %>%
+  crossing(inflation_proj) %>%
+  mutate(
+    adj_fixed_cost_infl = adj_fixed_cost * (1 + inflation_rate)^(year - 2020),
+    total_variable_cost_infl = total_variable_cost * (1 + inflation_rate)^(year - 2020),
+    total_cost_infl = adj_fixed_cost_infl + total_variable_cost_infl
+  )
+
+# 5. Monte Carlo sensitivity analysis (+/-10%) 
+set.seed(123)
+n_sim <- 500
+
+sens_results <- scale_up_inflation %>%
+  group_by(pathogen, plants, freq, year, optimal_tests) %>%
+  summarize(
+    adj_fixed_cost_sim = list(adj_fixed_cost_infl * runif(n_sim, 0.9, 1.1)),
+    total_variable_cost_sim = list(total_variable_cost_infl * runif(n_sim, 0.9, 1.1)),
+    .groups = "drop"
+  ) %>%
+  unnest(c(adj_fixed_cost_sim, total_variable_cost_sim)) %>%
+  mutate(total_cost_sim = adj_fixed_cost_sim + total_variable_cost_sim)
+
+# 6. Summarize simulations 
+summary_results <- sens_results %>%
+  group_by(pathogen, year, optimal_tests) %>%
+  summarize(
+    median_fixed = median(adj_fixed_cost_sim),
+    median_variable = median(total_cost_sim - adj_fixed_cost_sim),
+    lower_total = quantile(total_cost_sim, 0.025),
+    upper_total = quantile(total_cost_sim, 0.975),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(cols = c(median_fixed, median_variable), 
+               names_to = "cost_type", values_to = "median_cost") %>%
+  mutate(cost_type = recode(cost_type,
+                            median_fixed = "Fixed Cost",
+                            median_variable = "Variable Cost"))
+
+# 7. Table: Median costs per pathogen per year ----
+table_median <- summary_results %>%
+  select(pathogen, year, cost_type, median_cost) %>%
+  pivot_wider(names_from = cost_type, values_from = median_cost)
+print("=== Median Costs per Pathogen per Year ===")
+print(table_median)
+
+# 8. Table: 95% simulation interval ----
+table_interval <- sens_results %>%
+  group_by(pathogen, year) %>%
+  summarize(
+    lower_total = quantile(total_cost_sim, 0.025),
+    upper_total = quantile(total_cost_sim, 0.975),
+    .groups = "drop"
+  )
+print("=== 95% Simulation Intervals per Pathogen per Year ===")
+print(table_interval)
+
+# 9. Plot: Multi-panel stacked area with inflation + uncertainty ----
+# Merge optimal_tests
+summary_results_plot <- summary_results %>%
+  left_join(pathogen_summary %>% select(pathogen, optimal_tests), by = "pathogen")
+```
+
+```{r}
+# --- NEW SECTION: Network-level costs with uncertainty -----------------------
+
+# 1. Aggregate pathogen-level simulations into network-level cost
+network_sims <- sens_results %>%
+  group_by(year, .draw = row_number()) %>%  # create pseudo draw index
+  summarize(
+    total_network_cost = sum(total_cost_sim),  # sum across pathogens
+    .groups = "drop"
+  )
+
+# 2. Apply operating capacity reductions
+capacity_levels <- c(1, 0.8, 0.5, 0.2)
+
+network_sims_capacity <- network_sims %>%
+  crossing(capacity = capacity_levels) %>%
+  mutate(
+    scaled_cost = total_network_cost * capacity,
+    scenario = paste0("Capacity ", capacity * 100, "%")
+  )
+
+# 3. Add Center of Excellence scenario (x6)
+coe_sims <- network_sims %>%
+  mutate(
+    scaled_cost = total_network_cost * 6,
+    scenario = "Center of Excellence (x6)"
+  )
+
+# 4. Combine
+network_sims_all <- bind_rows(network_sims_capacity, coe_sims)
+
+# 5. Summarize uncertainty (median + 95% CI per year per scenario)
+network_summary <- network_sims_all %>%
+  group_by(year, scenario) %>%
+  summarize(
+    median_cost = median(scaled_cost),
+    lower_total = quantile(scaled_cost, 0.025),
+    upper_total = quantile(scaled_cost, 0.975),
+    .groups = "drop"
+  )
+
+# --- Table output -------------------------------------------
+print("=== Network Costs (Median + 95% Interval) ===")
+print(network_summary)
+```
+```{r}
+# ------------------------------
+# Load libraries
+# ------------------------------
+library(shiny)
+library(ggplot2)
+library(dplyr)
+library(scales)
+
+# ------------------------------
+# Assume network_summary exists in environment
+# network_summary should have columns:
+# year, scenario, median_cost, lower_total, upper_total
+# ------------------------------
+
+# ------------------------------
+# UI
+# ------------------------------
+ui <- fluidPage(
+  titlePanel("Network-Level Costs Explorer"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      helpText("Explore median network-level costs and 95% simulation interval."),
+      
+      # Scenario selection
+      checkboxGroupInput(
+        inputId = "selected_scenarios",
+        label = "Select scenarios to display:",
+        choices = unique(network_summary$scenario),
+        selected = unique(network_summary$scenario)
+      ),
+      
+      # Optional: capacity scaling slider
+      sliderInput(
+        inputId = "capacity_scale",
+        label = "Capacity scaling multiplier",
+        min = 0.2,
+        max = 6,
+        value = 1,
+        step = 0.1
+      )
+    ),
+    
+    mainPanel(
+      plotOutput("costPlot", height = "600px"),
+      br(),
+      tableOutput("summaryTable")
+    )
+  )
+)
+
+# ------------------------------
+# Server
+# ------------------------------
+server <- function(input, output) {
+  
+  # Reactive: filter scenarios and apply scaling
+  filtered_data <- reactive({
+    network_summary %>%
+      filter(scenario %in% input$selected_scenarios) %>%
+      mutate(
+        scaled_median = median_cost * input$capacity_scale,
+        scaled_lower = lower_total * input$capacity_scale,
+        scaled_upper = upper_total * input$capacity_scale
+      )
+  })
+  
+  # Plot
+  output$costPlot <- renderPlot({
+    ggplot(filtered_data(), aes(x = round(year), y = scaled_median)) +
+      geom_ribbon(aes(ymin = scaled_lower, ymax = scaled_upper), alpha = 0.2, fill = "steelblue") +
+      geom_line(color = "steelblue", size = 1.1) +
+      geom_point(color = "steelblue", size = 2) +
+      scale_y_continuous(labels = scales::dollar_format(scale = 1e-6, suffix = "M")) +
+      scale_x_continuous(breaks = seq(min(network_summary$year), max(network_summary$year), 1)) +
+      labs(
+        title = "Network-Level Costs by Scenario",
+        subtitle = "Median with 95% Simulation Interval, 2024–2030",
+        x = "Year",
+        y = "Total Cost (Millions USD)"
+      ) +
+      facet_wrap(~scenario, scales = "free_y", ncol = 2) +
+      theme_minimal(base_size = 14) +
+      theme(
+        strip.text = element_text(face = "bold"),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1)
+      )
+  })
+  
+  # Table
+  output$summaryTable <- renderTable({
+    filtered_data() %>%
+      select(year, scenario, scaled_median, scaled_lower, scaled_upper) %>%
+      rename(
+        "Year" = year,
+        "Scenario" = scenario,
+        "Median Cost (USD)" = scaled_median,
+        "Lower 95% CI" = scaled_lower,
+        "Upper 95% CI" = scaled_upper
+      )
+  })
+  
+}
+
+# ------------------------------
+# Run the app
+# ------------------------------
+shinyApp(ui = ui, server = server)
+```
+
+```{r}
+library(shiny)
+library(ggplot2)
+library(dplyr)
+library(scales)
+library(tidyr)
+
+# ------------------------------
+# UI
+# ------------------------------
+ui <- fluidPage(
+  titlePanel("Network-Level Costs Explorer"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      helpText("Explore median network-level costs and 95% simulation interval."),
+
+      # Scenario selection
+      selectizeInput(
+        "selected_scenarios",
+        "Select scenarios to display:",
+        choices = unique(network_summary$scenario),
+        selected = unique(network_summary$scenario),
+        multiple = TRUE
+      ),
+
+      # Capacity scaling slider
+      sliderInput(
+        "capacity_scale",
+        "Capacity scaling multiplier",
+        min = 0.2,
+        max = 6,
+        value = 1,
+        step = 0.1
+      )
+    ),
+    
+    mainPanel(
+      plotOutput("networkPlot", height = "600px"),
+      br(),
+      tableOutput("networkTable")
+    )
+  )
+)
+
+# ------------------------------
+# Server
+# ------------------------------
+server <- function(input, output) {
+
+  # Filter and scale network data
+  filtered_network <- reactive({
+    req(input$selected_scenarios)
+    
+    network_summary %>%
+      filter(scenario %in% input$selected_scenarios) %>%
+      mutate(
+        scaled_median = median_cost * input$capacity_scale,
+        scaled_lower = lower_total * input$capacity_scale,
+        scaled_upper = upper_total * input$capacity_scale
+      ) %>%
+      arrange(year)
+  })
+  
+  # Plot
+  output$networkPlot <- renderPlot({
+    df <- filtered_network()
+    req(nrow(df) > 0)
+    
+    ggplot(df, aes(x = round(year), y = scaled_median)) +
+      geom_ribbon(aes(ymin = scaled_lower, ymax = scaled_upper),
+                  alpha = 0.2, fill = "steelblue") +
+      geom_line(color = "steelblue", size = 1.1) +
+      geom_point(color = "steelblue", size = 2) +
+      scale_y_continuous(labels = scales::dollar_format(scale = 1e-6, suffix = "M")) +
+      scale_x_continuous(breaks = seq(min(df$year), max(df$year), 1)) +
+      labs(
+        title = "Network-Level Costs by Scenario",
+        subtitle = "Median with 95% Simulation Interval, 2024–2030",
+        x = "Year",
+        y = "Total Cost (Millions USD)"
+      ) +
+      facet_wrap(~scenario, scales = "free_y", ncol = 2) +
+      theme_minimal(base_size = 14) +
+      theme(
+        strip.text = element_text(face = "bold"),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1)
+      )
+  })
+  
+  # Table
+  output$networkTable <- renderTable({
+    df <- filtered_network()
+    req(nrow(df) > 0)
+    
+    df %>%
+      select(year, scenario, scaled_median, scaled_lower, scaled_upper) %>%
+      rename(
+        "Year" = year,
+        "Scenario" = scenario,
+        "Median Cost (USD)" = scaled_median,
+        "Lower 95% CI" = scaled_lower,
+        "Upper 95% CI" = scaled_upper
+      )
+  })
+}
+
+# ------------------------------
+# Run App
+# ------------------------------
+shinyApp(ui, server)
+```
+
+
+```{r}
+library(shiny)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(scales)
+
+# -----------------------------
+# UI
+# -----------------------------
+ui <- fluidPage(
+  titlePanel("Wastewater Network Cost Explorer"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      helpText("Explore costs per pathogen and aggregated network scenarios."),
+      
+      selectizeInput(
+        "selected_pathogens",
+        "Select pathogen(s):",
+        choices = unique(scale_up_results$pathogen),
+        selected = unique(scale_up_results$pathogen)[1],
+        multiple = TRUE
+      ),
+      
+      sliderInput(
+        "plants_range",
+        "Number of Wastewater Treatment Plants:",
+        min = min(scale_up_results$plants),
+        max = 205,                 # Updated max
+        value = c(min(scale_up_results$plants), 205),
+        step = 1
+      ),
+      
+      sliderInput(
+        "optimal_multiplier",
+        "Optimal test threshold multiplier:",
+        min = 0.5, max = 3, value = 1, step = 0.1
+      ),
+      
+      selectizeInput(
+        "selected_freq",
+        "Select sampling frequency:",
+        choices = unique(scale_up_results$freq),
+        selected = unique(scale_up_results$freq)[1],
+        multiple = TRUE
+      )
+    ),
+    
+    mainPanel(
+      tabsetPanel(
+        tabPanel("Per-Pathogen Costs", plotOutput("pathogenPlot", height = "500px")),
+        tabPanel("Aggregated Costs", plotOutput("aggPlot", height = "500px")),
+        tabPanel("Stepwise Sensitivity", plotOutput("sensitivityPlot", height = "500px")),
+        tabPanel("Total Network Cost", plotOutput("networkPlot", height = "500px"))
+      )
+    )
+  )
+)
+
+# -----------------------------
+# Server
+# -----------------------------
+server <- function(input, output) {
+  
+  # Filter per-pathogen scale-up
+  filtered_scale_up <- reactive({
+    req(input$selected_pathogens, input$selected_freq)
+    scale_up_results %>%
+      filter(
+        pathogen %in% input$selected_pathogens,
+        freq %in% input$selected_freq,
+        plants >= input$plants_range[1],
+        plants <= input$plants_range[2]
+      ) %>%
+      mutate(
+        adj_fixed_cost_scaled = adj_fixed_cost * input$optimal_multiplier,
+        total_cost_scaled = adj_fixed_cost_scaled + total_variable_cost
+      )
+  })
+  
+  # -----------------------------
+  # Tab 1: Per-pathogen costs
+  # -----------------------------
+  output$pathogenPlot <- renderPlot({
+    df <- filtered_scale_up()
+    req(nrow(df) > 0)
+    
+    ggplot(df, aes(x = plants, y = total_cost_scaled/1e6,
+                   color = pathogen, group = pathogen)) +
+      geom_line(size = 1.2) +
+      geom_point(size = 2) +
+      facet_wrap(~freq, ncol = 1) +
+      scale_y_continuous(labels = dollar_format(suffix = "M")) +
+      labs(
+        title = "Per-Pathogen Annual Costs",
+        x = "Number of Wastewater Plants",
+        y = "Annual Cost (Million USD)",
+        color = "Pathogen"
+      ) +
+      theme_minimal(base_size = 14) +
+      theme(legend.position = "bottom")
+  })
+  
+  # -----------------------------
+  # Tab 2: Aggregated costs
+  # -----------------------------
+  filtered_agg <- reactive({
+    df <- filtered_scale_up()
+    
+    df %>%
+      group_by(plants, freq) %>%
+      summarise(
+        cost_1_pathogen  = mean(total_cost_scaled, na.rm = TRUE),
+        cost_4_pathogens = sum(head(sort(total_cost_scaled), 4)),
+        cost_8_pathogens = sum(total_cost_scaled),
+        .groups = "drop"
+      ) %>%
+      pivot_longer(cols = starts_with("cost"),
+                   names_to = "scenario",
+                   values_to = "annual_cost") %>%
+      mutate(scenario = recode(scenario,
+                               cost_1_pathogen = "1 Pathogen",
+                               cost_4_pathogens = "4 Pathogens",
+                               cost_8_pathogens = "8 Pathogens"))
+  })
+  
+  output$aggPlot <- renderPlot({
+    df <- filtered_agg()
+    req(nrow(df) > 0)
+    
+    ggplot(df, aes(x = plants, y = annual_cost/1e6, color = scenario, group = scenario)) +
+      geom_line(size = 1.4) +
+      geom_point(size = 3) +
+      facet_wrap(~freq, ncol = 1) +
+      scale_y_continuous(labels = dollar_format(suffix = "M")) +
+      labs(
+        title = "Aggregated Scale-up Scenarios",
+        x = "Number of Wastewater Plants",
+        y = "Annual Cost (Million USD)",
+        color = "Scenario"
+      ) +
+      theme_minimal(base_size = 14) +
+      theme(legend.position = "bottom")
+  })
+  
+  # -----------------------------
+  # Tab 3: Stepwise fixed cost sensitivity
+  # -----------------------------
+  output$sensitivityPlot <- renderPlot({
+    df <- filtered_scale_up()
+    req(nrow(df) > 0)
+    
+    sensitivity_df <- expand.grid(
+      multiplier = seq(0.5, 3, 0.1),
+      pathogen = unique(df$pathogen)
+    ) %>%
+      rowwise() %>%
+      mutate(
+        total_cost_scaled = sum((adj_fixed_cost * multiplier) + total_variable_cost)
+      )
+    
+    ggplot(sensitivity_df, aes(x = multiplier, y = total_cost_scaled/1e6,
+                               color = pathogen, group = pathogen)) +
+      geom_line(size = 1.2) +
+      geom_point(size = 1) +
+      labs(
+        title = "Stepwise Fixed Cost Sensitivity",
+        x = "Optimal Test Threshold Multiplier",
+        y = "Total Annual Cost (Million USD)",
+        color = "Pathogen"
+      ) +
+      scale_y_continuous(labels = dollar_format(suffix = "M")) +
+      theme_minimal(base_size = 14) +
+      theme(legend.position = "bottom")
+  })
+  
+  # -----------------------------
+  # Tab 4: Total Network Cost
+  # -----------------------------
+  output$networkPlot <- renderPlot({
+    df <- filtered_scale_up()
+    req(nrow(df) > 0)
+    
+    network_df <- df %>%
+      group_by(plants, freq) %>%
+      summarise(total_network_cost = sum(total_cost_scaled, na.rm = TRUE), .groups = "drop")
+    
+    ggplot(network_df, aes(x = plants, y = total_network_cost/1e6, group = freq, color = as.factor(freq))) +
+      geom_line(size = 1.3) +
+      geom_point(size = 2) +
+      scale_y_continuous(labels = dollar_format(suffix = "M")) +
+      labs(
+        title = "Total Network Cost (All Selected Pathogens)",
+        x = "Number of Wastewater Plants",
+        y = "Total Annual Cost (Million USD)",
+        color = "Sampling Frequency"
+      ) +
+      theme_minimal(base_size = 14) +
+      theme(legend.position = "bottom")
+  })
+  
+}
+
+# -----------------------------
+# Run App
+# -----------------------------
+shinyApp(ui, server)
+```
+
+
